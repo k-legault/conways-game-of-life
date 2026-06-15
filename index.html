@@ -4,97 +4,27 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Conway's Game of Life</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-    body {
-      background: #0f0f0f;
-      color: #e0e0e0;
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      min-height: 100vh;
-      padding: 16px;
-      gap: 12px;
-    }
-
-    h1 {
-      font-size: 1.4rem;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      color: #a0f0a0;
-    }
-
-    #canvas-wrap {
-      border: 1px solid #333;
-      cursor: crosshair;
-      line-height: 0;
-    }
-
-    canvas { display: block; }
-
-    #controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-      justify-content: center;
-    }
-
-    button {
-      background: #1e1e1e;
-      color: #e0e0e0;
-      border: 1px solid #444;
-      border-radius: 6px;
-      padding: 6px 16px;
-      font-size: 0.9rem;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-    button:hover { background: #2e2e2e; }
-    button.active { background: #1a3a1a; border-color: #4a8a4a; color: #a0f0a0; }
-
-    label {
-      font-size: 0.85rem;
-      color: #aaa;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    input[type=range] { width: 90px; accent-color: #4a8a4a; }
-
-    select {
-      background: #1e1e1e;
-      color: #e0e0e0;
-      border: 1px solid #444;
-      border-radius: 6px;
-      padding: 5px 8px;
-      font-size: 0.85rem;
-      cursor: pointer;
-    }
-
-    #stats {
-      font-size: 0.8rem;
-      color: #666;
-      text-align: center;
-    }
-  </style>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
 <h1>Conway's Game of Life</h1>
+<p class="subtitle">
+  Click to draw cells. Older cells shift from
+  <span class="color-bar"></span>
+  green → cyan → indigo → purple → pink. Toggle <strong>Music</strong> for generative audio.
+</p>
 
 <div id="canvas-wrap">
   <canvas id="canvas"></canvas>
 </div>
 
-<div id="controls">
+<div class="controls">
   <button id="btn-play">▶ Play</button>
   <button id="btn-step">Step</button>
   <button id="btn-clear">Clear</button>
   <button id="btn-random">Random</button>
+  <button id="btn-music">♪ Music</button>
 
   <label>
     Speed
@@ -103,7 +33,7 @@
 
   <label>
     Cell size
-    <input type="range" id="cell-size" min="4" max="24" value="12" />
+    <input type="range" id="cell-size" min="4" max="24" value="10" />
   </label>
 
   <label>
@@ -115,274 +45,21 @@
       <option value="pulsar">Pulsar</option>
       <option value="r-pentomino">R-pentomino</option>
       <option value="gosper">Gosper glider gun</option>
+      <option value="glider-fleet">Glider fleet</option>
     </select>
   </label>
 </div>
 
 <div id="stats">Generation: <span id="gen">0</span> &nbsp;|&nbsp; Live cells: <span id="live">0</span></div>
 
-<script>
-const canvas = document.getElementById('canvas');
-const ctx = canvas.getContext('2d');
+<div class="legend">
+  <span><span class="key">Space</span> play/pause</span>
+  <span><span class="key">→</span> step</span>
+  <span><span class="key">M</span> music</span>
+  <span><span class="key">C</span> clear</span>
+  <span><span class="key">R</span> random</span>
+</div>
 
-const CELL_COLOR = '#4ade80';
-const GRID_COLOR = '#1a1a1a';
-const BG_COLOR = '#0f0f0f';
-
-let cellSize = 12;
-let cols, rows;
-let grid = [];
-let running = false;
-let generation = 0;
-let animFrame = null;
-let lastTime = 0;
-
-// ── Grid helpers ──────────────────────────────────────────────────────────────
-
-function resize() {
-  const maxW = Math.min(window.innerWidth - 32, 900);
-  const maxH = Math.min(window.innerHeight - 200, 700);
-  cols = Math.floor(maxW / cellSize);
-  rows = Math.floor(maxH / cellSize);
-  canvas.width = cols * cellSize;
-  canvas.height = rows * cellSize;
-  const next = createGrid();
-  for (let r = 0; r < Math.min(rows, grid.length || 0); r++)
-    for (let c = 0; c < Math.min(cols, (grid[r] || []).length); c++)
-      next[r][c] = grid[r][c];
-  grid = next;
-  draw();
-}
-
-function createGrid() {
-  return Array.from({ length: rows }, () => new Uint8Array(cols));
-}
-
-function countNeighbors(g, r, c) {
-  let n = 0;
-  for (let dr = -1; dr <= 1; dr++)
-    for (let dc = -1; dc <= 1; dc++) {
-      if (dr === 0 && dc === 0) continue;
-      const nr = (r + dr + rows) % rows;
-      const nc = (c + dc + cols) % cols;
-      n += g[nr][nc];
-    }
-  return n;
-}
-
-function step() {
-  const next = createGrid();
-  for (let r = 0; r < rows; r++)
-    for (let c = 0; c < cols; c++) {
-      const n = countNeighbors(grid, r, c);
-      next[r][c] = grid[r][c]
-        ? (n === 2 || n === 3 ? 1 : 0)
-        : (n === 3 ? 1 : 0);
-    }
-  grid = next;
-  generation++;
-}
-
-// ── Drawing ───────────────────────────────────────────────────────────────────
-
-function draw() {
-  ctx.fillStyle = BG_COLOR;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // grid lines
-  ctx.strokeStyle = GRID_COLOR;
-  ctx.lineWidth = 0.5;
-  for (let c = 0; c <= cols; c++) {
-    ctx.beginPath(); ctx.moveTo(c * cellSize, 0); ctx.lineTo(c * cellSize, canvas.height); ctx.stroke();
-  }
-  for (let r = 0; r <= rows; r++) {
-    ctx.beginPath(); ctx.moveTo(0, r * cellSize); ctx.lineTo(canvas.width, r * cellSize); ctx.stroke();
-  }
-
-  // cells
-  ctx.fillStyle = CELL_COLOR;
-  let live = 0;
-  for (let r = 0; r < rows; r++)
-    for (let c = 0; c < cols; c++)
-      if (grid[r][c]) {
-        ctx.fillRect(c * cellSize + 1, r * cellSize + 1, cellSize - 1, cellSize - 1);
-        live++;
-      }
-
-  document.getElementById('gen').textContent = generation;
-  document.getElementById('live').textContent = live;
-}
-
-// ── Animation loop ────────────────────────────────────────────────────────────
-
-function getInterval() {
-  const fps = parseInt(document.getElementById('speed').value);
-  return 1000 / fps;
-}
-
-function loop(ts) {
-  if (ts - lastTime >= getInterval()) {
-    step();
-    draw();
-    lastTime = ts;
-  }
-  animFrame = requestAnimationFrame(loop);
-}
-
-function play() {
-  if (running) return;
-  running = true;
-  document.getElementById('btn-play').textContent = '⏸ Pause';
-  document.getElementById('btn-play').classList.add('active');
-  lastTime = 0;
-  animFrame = requestAnimationFrame(loop);
-}
-
-function pause() {
-  if (!running) return;
-  running = false;
-  cancelAnimationFrame(animFrame);
-  document.getElementById('btn-play').textContent = '▶ Play';
-  document.getElementById('btn-play').classList.remove('active');
-}
-
-// ── Mouse drawing ─────────────────────────────────────────────────────────────
-
-let drawing = false;
-let drawValue = 1;
-
-canvas.addEventListener('mousedown', e => {
-  drawing = true;
-  const { r, c } = cellAt(e);
-  drawValue = grid[r][c] ? 0 : 1;
-  toggle(r, c, drawValue);
-});
-canvas.addEventListener('mousemove', e => {
-  if (!drawing) return;
-  const { r, c } = cellAt(e);
-  toggle(r, c, drawValue);
-});
-window.addEventListener('mouseup', () => drawing = false);
-
-canvas.addEventListener('touchstart', e => {
-  e.preventDefault();
-  drawing = true;
-  const { r, c } = cellAt(e.touches[0]);
-  drawValue = grid[r][c] ? 0 : 1;
-  toggle(r, c, drawValue);
-}, { passive: false });
-canvas.addEventListener('touchmove', e => {
-  e.preventDefault();
-  if (!drawing) return;
-  const { r, c } = cellAt(e.touches[0]);
-  toggle(r, c, drawValue);
-}, { passive: false });
-window.addEventListener('touchend', () => drawing = false);
-
-function cellAt(e) {
-  const rect = canvas.getBoundingClientRect();
-  return {
-    r: Math.floor((e.clientY - rect.top) / cellSize),
-    c: Math.floor((e.clientX - rect.left) / cellSize),
-  };
-}
-
-function toggle(r, c, val) {
-  if (r < 0 || r >= rows || c < 0 || c >= cols) return;
-  grid[r][c] = val;
-  draw();
-}
-
-// ── Controls ──────────────────────────────────────────────────────────────────
-
-document.getElementById('btn-play').addEventListener('click', () => running ? pause() : play());
-
-document.getElementById('btn-step').addEventListener('click', () => {
-  pause();
-  step();
-  draw();
-});
-
-document.getElementById('btn-clear').addEventListener('click', () => {
-  pause();
-  grid = createGrid();
-  generation = 0;
-  draw();
-});
-
-document.getElementById('btn-random').addEventListener('click', () => {
-  pause();
-  grid = createGrid();
-  generation = 0;
-  for (let r = 0; r < rows; r++)
-    for (let c = 0; c < cols; c++)
-      grid[r][c] = Math.random() < 0.3 ? 1 : 0;
-  draw();
-});
-
-document.getElementById('cell-size').addEventListener('input', e => {
-  cellSize = parseInt(e.target.value);
-  resize();
-});
-
-// ── Preset patterns ───────────────────────────────────────────────────────────
-
-const PATTERNS = {
-  glider: [[0,1],[1,2],[2,0],[2,1],[2,2]],
-  lwss: [[0,1],[0,2],[0,3],[0,4],[1,0],[1,4],[2,4],[3,0],[3,3]],
-  pulsar: [
-    [0,2],[0,3],[0,4],[0,8],[0,9],[0,10],
-    [2,0],[2,5],[2,7],[2,12],
-    [3,0],[3,5],[3,7],[3,12],
-    [4,0],[4,5],[4,7],[4,12],
-    [5,2],[5,3],[5,4],[5,8],[5,9],[5,10],
-    [7,2],[7,3],[7,4],[7,8],[7,9],[7,10],
-    [8,0],[8,5],[8,7],[8,12],
-    [9,0],[9,5],[9,7],[9,12],
-    [10,0],[10,5],[10,7],[10,12],
-    [12,2],[12,3],[12,4],[12,8],[12,9],[12,10],
-  ],
-  'r-pentomino': [[0,1],[0,2],[1,0],[1,1],[2,1]],
-  gosper: [
-    [0,24],
-    [1,22],[1,24],
-    [2,12],[2,13],[2,20],[2,21],[2,34],[2,35],
-    [3,11],[3,15],[3,20],[3,21],[3,34],[3,35],
-    [4,0],[4,1],[4,10],[4,16],[4,20],[4,21],
-    [5,0],[5,1],[5,10],[5,14],[5,16],[5,17],[5,22],[5,24],
-    [6,10],[6,16],[6,24],
-    [7,11],[7,15],
-    [8,12],[8,13],
-  ],
-};
-
-document.getElementById('pattern').addEventListener('change', e => {
-  const key = e.target.value;
-  if (!key) return;
-  e.target.value = '';
-  pause();
-  const cells = PATTERNS[key];
-  const or = Math.floor(rows / 2) - Math.floor(Math.max(...cells.map(c => c[0])) / 2);
-  const oc = Math.floor(cols / 2) - Math.floor(Math.max(...cells.map(c => c[1])) / 2);
-  for (const [dr, dc] of cells) {
-    const r = or + dr, c = oc + dc;
-    if (r >= 0 && r < rows && c >= 0 && c < cols) grid[r][c] = 1;
-  }
-  draw();
-});
-
-// ── Keyboard shortcuts ────────────────────────────────────────────────────────
-
-document.addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-  if (e.code === 'Space') { e.preventDefault(); running ? pause() : play(); }
-  if (e.code === 'ArrowRight') { pause(); step(); draw(); }
-});
-
-// ── Init ──────────────────────────────────────────────────────────────────────
-
-window.addEventListener('resize', resize);
-resize();
-</script>
+<script src="game.js"></script>
 </body>
 </html>
