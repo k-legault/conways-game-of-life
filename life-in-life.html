@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Life in Life</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #080810;
+      color: #ccc;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+      gap: 10px;
+    }
+
+    h1 { color: #4ade80; font-size: 1.4rem; letter-spacing: 0.06em; }
+
+    .subtitle {
+      font-size: 0.78rem;
+      color: #555;
+      text-align: center;
+      max-width: 640px;
+      line-height: 1.5;
+    }
+
+    #canvas-wrap {
+      position: relative;
+      border: 1px solid #1e1e2e;
+      line-height: 0;
+    }
+
+    canvas { display: block; cursor: crosshair; }
+
+    /* meta overlay canvas – drawn on top, pointer-events off */
+    #overlay { position: absolute; top: 0; left: 0; pointer-events: none; }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: center;
+      align-items: center;
+    }
+
+    button {
+      background: #111118;
+      color: #ccc;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 5px 14px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #1a1a25; }
+    button.active { background: #0e2218; border-color: #3a7a4a; color: #4ade80; }
+    button.dim { opacity: 0.5; }
+
+    label {
+      font-size: 0.8rem;
+      color: #777;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    input[type=range] { width: 80px; accent-color: #4ade80; }
+
+    .stats { font-size: 0.75rem; color: #444; }
+    .stats span { color: #666; }
+
+    .legend {
+      display: flex;
+      gap: 16px;
+      font-size: 0.72rem;
+      color: #444;
+      align-items: center;
+    }
+    .dot {
+      width: 10px; height: 10px; border-radius: 2px; display: inline-block; margin-right: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Life in Life</h1>
+<p class="subtitle">
+  Conway's Game of Life at two scales. Each <em>meta-cell</em> is a 12×12 inner Life simulation
+  isolated by dead-cell walls. The outer Life rules determine which meta-cells live or die —
+  when a meta-cell is born it gets a random seed; when it dies its inner world is erased.
+  Click any meta-cell to toggle it.
+</p>
+
+<div id="canvas-wrap">
+  <canvas id="canvas"></canvas>
+  <canvas id="overlay"></canvas>
+</div>
+
+<div class="controls">
+  <button id="btn-play">▶ Play</button>
+  <button id="btn-ostep">Outer Step</button>
+  <button id="btn-istep">Inner Step</button>
+  <button id="btn-clear">Clear</button>
+  <button id="btn-random">Random</button>
+
+  <select id="preset" style="background:#111118;color:#ccc;border:1px solid #333;border-radius:6px;padding:5px 8px;font-size:0.8rem;cursor:pointer;">
+    <option value="">— presets —</option>
+    <option value="glider">Glider</option>
+    <option value="rpento">R-pentomino</option>
+    <option value="blinker">Blinker</option>
+    <option value="pulsar">Pulsar</option>
+  </select>
+
+  <button id="btn-view">Show Meta View</button>
+
+  <label>Outer speed <input type="range" id="ospeed" min="1" max="12" value="4" /></label>
+</div>
+
+<div class="stats">
+  Inner gen: <span id="igen">0</span>
+  &nbsp;|&nbsp;
+  Outer gen: <span id="ogen">0</span>
+  &nbsp;|&nbsp;
+  Alive meta-cells: <span id="alive">0</span> / <span id="total">0</span>
+</div>
+
+<div class="legend">
+  <span><span class="dot" style="background:#4ade80"></span>Inner alive cell</span>
+  <span><span class="dot" style="background:rgba(74,222,128,0.25);border:1px solid rgba(74,222,128,0.5)"></span>Alive meta-cell boundary</span>
+  <span style="color:#333">[Space] play/pause &nbsp; [→] outer step &nbsp; [V] toggle view</span>
+</div>
+
+<script>
+// ── Constants ──────────────────────────────────────────────────────────────────
+const CELL_PX = 3;    // pixels per inner cell
+const MC  = 12;       // inner cells per meta-cell side
+const GAP = 2;        // dead-cell gap between meta-cells (acts as wall)
+const MS  = MC + GAP; // meta stride = 14
+const MCols = 20;
+const MRows = 14;
+const IW  = MCols * MS;  // inner grid width  = 280
+const IH  = MRows * MS;  // inner grid height = 196
+
+// ── Canvas setup ───────────────────────────────────────────────────────────────
+const canvas  = document.getElementById('canvas');
+const overlay = document.getElementById('overlay');
+const ctx     = canvas.getContext('2d');
+const octx    = overlay.getContext('2d');
+
+canvas.width = overlay.width = IW * CELL_PX;   // 840
+canvas.height = overlay.height = IH * CELL_PX; // 588
+document.getElementById('total').textContent = MCols * MRows;
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let inner    = new Uint8Array(IW * IH);
+let meta     = new Uint8Array(MCols * MRows);
+let innerGen = 0, outerGen = 0;
+let running  = false, animId = null;
+let frameCount = 0;
+let showMeta = false;
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+const ii  = (r, c)   => r * IW + c;
+const mi  = (mr, mc) => mr * MCols + mc;
+const mcO = (mr, mc) => [mr * MS, mc * MS]; // top-left inner cell of a meta-cell
+
+// ── Meta-cell seeding & clearing ───────────────────────────────────────────────
+function seedMC(mr, mc) {
+  const [r0, c0] = mcO(mr, mc);
+  for (let dr = 1; dr < MC - 1; dr++)
+    for (let dc = 1; dc < MC - 1; dc++)
+      inner[ii(r0 + dr, c0 + dc)] = Math.random() < 0.38 ? 1 : 0;
+}
+
+function clearMC(mr, mc) {
+  const [r0, c0] = mcO(mr, mc);
+  for (let dr = 0; dr < MC; dr++)
+    for (let dc = 0; dc < MC; dc++)
+      inner[ii(r0 + dr, c0 + dc)] = 0;
+}
+
+function mcHasCells(mr, mc) {
+  const [r0, c0] = mcO(mr, mc);
+  for (let dr = 0; dr < MC; dr++)
+    for (let dc = 0; dc < MC; dc++)
+      if (inner[ii(r0 + dr, c0 + dc)]) return true;
+  return false;
+}
+
+// ── Inner Life step ────────────────────────────────────────────────────────────
+// Gap cells are always 0 (never written to) so they act as dead-cell walls,
+// preventing patterns from leaking between meta-cells.
+function innerStep() {
+  const next = new Uint8Array(IW * IH);
+  for (let r = 1; r < IH - 1; r++) {
+    if (r % MS >= MC) continue; // gap row — stays 0
+    for (let c = 1; c < IW - 1; c++) {
+      if (c % MS >= MC) continue; // gap col — stays 0
+      const n =
+        inner[ii(r-1,c-1)] + inner[ii(r-1,c)] + inner[ii(r-1,c+1)] +
+        inner[ii(r,  c-1)]                     + inner[ii(r,  c+1)] +
+        inner[ii(r+1,c-1)] + inner[ii(r+1,c)] + inner[ii(r+1,c+1)];
+      const a = inner[ii(r, c)];
+      next[ii(r, c)] = a ? (n === 2 || n === 3 ? 1 : 0) : (n === 3 ? 1 : 0);
+    }
+  }
+  inner = next;
+  innerGen++;
+}
+
+// ── Outer Life step ────────────────────────────────────────────────────────────
+function outerStep() {
+  // Re-seed alive meta-cells whose inner pattern went extinct
+  for (let mr = 0; mr < MRows; mr++)
+    for (let mc = 0; mc < MCols; mc++)
+      if (meta[mi(mr, mc)] && !mcHasCells(mr, mc))
+        seedMC(mr, mc);
+
+  // Apply Life rules to meta grid
+  const next = new Uint8Array(MCols * MRows);
+  for (let mr = 0; mr < MRows; mr++) {
+    for (let mc = 0; mc < MCols; mc++) {
+      let n = 0;
+      for (let dr = -1; dr <= 1; dr++)
+        for (let dc = -1; dc <= 1; dc++) {
+          if (!dr && !dc) continue;
+          const nr = mr + dr, nc = mc + dc;
+          if (nr >= 0 && nr < MRows && nc >= 0 && nc < MCols)
+            n += meta[mi(nr, nc)];
+        }
+      const a = meta[mi(mr, mc)];
+      next[mi(mr, mc)] = a ? (n === 2 || n === 3 ? 1 : 0) : (n === 3 ? 1 : 0);
+    }
+  }
+
+  // Sync inner grid with outer Life result
+  for (let mr = 0; mr < MRows; mr++)
+    for (let mc = 0; mc < MCols; mc++) {
+      const was = meta[mi(mr, mc)], now = next[mi(mr, mc)];
+      if (!was && now) seedMC(mr, mc);
+      else if (was && !now) clearMC(mr, mc);
+    }
+  meta.set(next);
+  outerGen++;
+}
+
+// ── Draw ───────────────────────────────────────────────────────────────────────
+function drawInnerView() {
+  ctx.fillStyle = '#080810';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Subtle grid lines at meta-cell boundaries
+  ctx.strokeStyle = '#0e0e1a';
+  ctx.lineWidth = 1;
+  for (let mr = 0; mr <= MRows; mr++) {
+    const y = mr * MS * CELL_PX;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+  }
+  for (let mc = 0; mc <= MCols; mc++) {
+    const x = mc * MS * CELL_PX;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+  }
+
+  // Alive inner cells
+  ctx.fillStyle = '#4ade80';
+  for (let r = 0; r < IH; r++) {
+    if (r % MS >= MC) continue;
+    for (let c = 0; c < IW; c++) {
+      if (c % MS >= MC) continue;
+      if (inner[ii(r, c)])
+        ctx.fillRect(c * CELL_PX, r * CELL_PX, CELL_PX, CELL_PX);
+    }
+  }
+}
+
+function drawMetaView() {
+  ctx.fillStyle = '#080810';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const cw = canvas.width  / MCols;
+  const ch = canvas.height / MRows;
+  for (let mr = 0; mr < MRows; mr++) {
+    for (let mc = 0; mc < MCols; mc++) {
+      const x = mc * cw, y = mr * ch;
+      if (meta[mi(mr, mc)]) {
+        ctx.fillStyle = '#4ade80';
+        ctx.fillRect(x + 1, y + 1, cw - 2, ch - 2);
+      }
+      ctx.strokeStyle = '#111120';
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(x, y, cw, ch);
+    }
+  }
+}
+
+function drawOverlay() {
+  octx.clearRect(0, 0, overlay.width, overlay.height);
+  if (showMeta) return; // meta view already shows outer state clearly
+  for (let mr = 0; mr < MRows; mr++) {
+    for (let mc = 0; mc < MCols; mc++) {
+      if (!meta[mi(mr, mc)]) continue;
+      const x = mc * MS * CELL_PX;
+      const y = mr * MS * CELL_PX;
+      const sz = MC * CELL_PX;
+      octx.fillStyle = 'rgba(74,222,128,0.06)';
+      octx.fillRect(x, y, sz, sz);
+      octx.strokeStyle = 'rgba(74,222,128,0.35)';
+      octx.lineWidth = 1;
+      octx.strokeRect(x + 0.5, y + 0.5, sz - 1, sz - 1);
+    }
+  }
+}
+
+function draw() {
+  showMeta ? drawMetaView() : drawInnerView();
+  drawOverlay();
+  let alive = 0;
+  for (let i = 0; i < meta.length; i++) alive += meta[i];
+  document.getElementById('igen').textContent = innerGen;
+  document.getElementById('ogen').textContent = outerGen;
+  document.getElementById('alive').textContent = alive;
+}
+
+// ── Animation loop ─────────────────────────────────────────────────────────────
+function getOuterPeriod() {
+  // speed 1 → outer step every 60 inner frames (~1/sec)
+  // speed 12 → outer step every 5 inner frames (~12/sec)
+  const s = parseInt(document.getElementById('ospeed').value);
+  return Math.max(2, Math.round(60 / s));
+}
+
+function loop() {
+  innerStep();
+  frameCount++;
+  if (frameCount % getOuterPeriod() === 0) outerStep();
+  draw();
+  animId = requestAnimationFrame(loop);
+}
+
+function play() {
+  if (running) return;
+  running = true;
+  animId = requestAnimationFrame(loop);
+  const b = document.getElementById('btn-play');
+  b.textContent = '⏸ Pause'; b.classList.add('active');
+}
+
+function pause() {
+  if (!running) return;
+  running = false;
+  cancelAnimationFrame(animId);
+  const b = document.getElementById('btn-play');
+  b.textContent = '▶ Play'; b.classList.remove('active');
+}
+
+// ── Presets ────────────────────────────────────────────────────────────────────
+function clearAll() {
+  pause();
+  meta.fill(0); inner.fill(0);
+  innerGen = 0; outerGen = 0; frameCount = 0;
+  draw();
+}
+
+function randomize() {
+  pause();
+  meta.fill(0); inner.fill(0);
+  innerGen = 0; outerGen = 0; frameCount = 0;
+  for (let mr = 0; mr < MRows; mr++)
+    for (let mc = 0; mc < MCols; mc++)
+      if (Math.random() < 0.28) { meta[mi(mr, mc)] = 1; seedMC(mr, mc); }
+  draw();
+}
+
+const PATTERNS = {
+  glider:  [[0,1],[1,2],[2,0],[2,1],[2,2]],
+  rpento:  [[0,1],[0,2],[1,0],[1,1],[2,1]],
+  blinker: [[1,0],[1,1],[1,2]],
+  pulsar: [
+    [0,2],[0,3],[0,4],[0,8],[0,9],[0,10],
+    [2,0],[2,5],[2,7],[2,12],[3,0],[3,5],[3,7],[3,12],
+    [4,0],[4,5],[4,7],[4,12],[5,2],[5,3],[5,4],[5,8],[5,9],[5,10],
+    [7,2],[7,3],[7,4],[7,8],[7,9],[7,10],
+    [8,0],[8,5],[8,7],[8,12],[9,0],[9,5],[9,7],[9,12],
+    [10,0],[10,5],[10,7],[10,12],[12,2],[12,3],[12,4],[12,8],[12,9],[12,10],
+  ],
+};
+
+function applyPreset(key) {
+  pause();
+  meta.fill(0); inner.fill(0);
+  innerGen = 0; outerGen = 0; frameCount = 0;
+  const cells = PATTERNS[key];
+  const maxR = Math.max(...cells.map(c => c[0]));
+  const maxC = Math.max(...cells.map(c => c[1]));
+  const or = Math.floor((MRows - maxR - 1) / 2);
+  const oc = Math.floor((MCols - maxC - 1) / 2);
+  for (const [dr, dc] of cells) {
+    const mr = or + dr, mc = oc + dc;
+    if (mr >= 0 && mr < MRows && mc >= 0 && mc < MCols) {
+      meta[mi(mr, mc)] = 1;
+      seedMC(mr, mc);
+    }
+  }
+  draw();
+}
+
+// ── Controls ───────────────────────────────────────────────────────────────────
+document.getElementById('btn-play').addEventListener('click', () => running ? pause() : play());
+
+document.getElementById('btn-ostep').addEventListener('click', () => {
+  pause();
+  innerStep(); // run one inner step too so it's not frozen
+  outerStep();
+  draw();
+});
+
+document.getElementById('btn-istep').addEventListener('click', () => {
+  pause();
+  innerStep();
+  draw();
+});
+
+document.getElementById('btn-clear').addEventListener('click', clearAll);
+document.getElementById('btn-random').addEventListener('click', randomize);
+
+document.getElementById('preset').addEventListener('change', e => {
+  const key = e.target.value;
+  if (key) applyPreset(key);
+  e.target.value = '';
+});
+
+document.getElementById('btn-view').addEventListener('click', () => {
+  showMeta = !showMeta;
+  const b = document.getElementById('btn-view');
+  b.textContent = showMeta ? 'Show Inner View' : 'Show Meta View';
+  b.classList.toggle('active', showMeta);
+  draw();
+});
+
+// ── Click to toggle meta-cells ─────────────────────────────────────────────────
+canvas.addEventListener('click', e => {
+  const rect = canvas.getBoundingClientRect();
+  const px = e.clientX - rect.left;
+  const py = e.clientY - rect.top;
+  let mr, mc;
+  if (showMeta) {
+    mc = Math.floor(px / (canvas.width  / MCols));
+    mr = Math.floor(py / (canvas.height / MRows));
+  } else {
+    mc = Math.floor(px / (MS * CELL_PX));
+    mr = Math.floor(py / (MS * CELL_PX));
+  }
+  if (mr < 0 || mr >= MRows || mc < 0 || mc >= MCols) return;
+  const idx = mi(mr, mc);
+  if (meta[idx]) { meta[idx] = 0; clearMC(mr, mc); }
+  else           { meta[idx] = 1; seedMC(mr, mc);  }
+  draw();
+});
+
+// ── Keyboard ───────────────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.code === 'Space')      { e.preventDefault(); running ? pause() : play(); }
+  if (e.code === 'ArrowRight') { pause(); outerStep(); innerStep(); draw(); }
+  if (e.code === 'KeyV')       { document.getElementById('btn-view').click(); }
+});
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+randomize();
+</script>
+</body>
+</html>
